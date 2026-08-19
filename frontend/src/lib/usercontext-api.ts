@@ -1,0 +1,370 @@
+// lib/usercontext-api.ts
+import { getCachedSession } from "./session-cache";
+import { createLogger } from "~/lib/logger";
+
+const logger = createLogger({ component: "UserContextAPI" });
+import { env } from "~/env";
+import api from "./api";
+import { fetchWithAuth } from "./fetch-with-auth";
+import {
+  mapEducationalGroupResponse,
+  mapActivityGroupResponse,
+  mapActiveGroupResponse,
+  mapUserProfileResponse,
+  mapStaffResponse,
+  mapTeacherResponse,
+  type EducationalGroup,
+  type ActivityGroup,
+  type ActiveGroup,
+  type UserProfile,
+  type Staff,
+  type Teacher,
+  type BackendEducationalGroup,
+  type BackendActivityGroup,
+  type BackendActiveGroup,
+  type BackendUserProfile,
+  type BackendStaff,
+  type BackendTeacher,
+} from "./usercontext-helpers";
+
+// Generic API response interface
+interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  data: T;
+}
+
+export const userContextService = {
+  // Get current user profile
+  getCurrentUser: async (): Promise<UserProfile> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi ? "/api/me" : `${env.NEXT_PUBLIC_API_URL}/me`;
+
+    try {
+      if (useProxyApi) {
+        const session = await getCachedSession();
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${session?.user?.token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("get current user failed", {
+            status: response.status,
+            error: errorText,
+          });
+          throw new Error(`Get current user failed: ${response.status}`);
+        }
+
+        const responseData =
+          (await response.json()) as ApiResponse<BackendUserProfile>;
+        return mapUserProfileResponse(responseData.data);
+      } else {
+        const response = await api.get<ApiResponse<BackendUserProfile>>(url);
+        return mapUserProfileResponse(response.data.data);
+      }
+    } catch (error) {
+      logger.error("get current user error", { error: String(error) });
+      throw error;
+    }
+  },
+
+  // Get current user's staff profile
+  getCurrentStaff: async (): Promise<Staff> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi
+      ? "/api/me/staff"
+      : `${env.NEXT_PUBLIC_API_URL}/me/staff`;
+
+    try {
+      if (useProxyApi) {
+        const session = await getCachedSession();
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${session?.user?.token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const status = response.status;
+          const errorText = await response.text();
+          // Do not spam console for the common "not linked" case
+          if (status !== 404) {
+            logger.error("get current staff failed", {
+              status,
+              error: errorText,
+            });
+          }
+          throw new Error(`Get current staff failed: ${status}`);
+        }
+
+        const responseData =
+          (await response.json()) as ApiResponse<BackendStaff>;
+        return mapStaffResponse(responseData.data);
+      } else {
+        const response = await api.get<ApiResponse<BackendStaff>>(url);
+        return mapStaffResponse(response.data.data);
+      }
+    } catch (error) {
+      // Suppress 404 logs (account not linked to a person) to avoid noisy console
+      if (
+        !(
+          error instanceof Error &&
+          error.message.includes("Get current staff failed: 404")
+        )
+      ) {
+        logger.error("get current staff error", { error: String(error) });
+      }
+      throw error;
+    }
+  },
+
+  // Get current user's teacher profile
+  getCurrentTeacher: async (): Promise<Teacher> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi
+      ? "/api/me/teacher"
+      : `${env.NEXT_PUBLIC_API_URL}/me/teacher`;
+
+    try {
+      if (useProxyApi) {
+        const session = await getCachedSession();
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${session?.user?.token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("get current teacher failed", {
+            status: response.status,
+            error: errorText,
+          });
+          throw new Error(`Get current teacher failed: ${response.status}`);
+        }
+
+        const responseData =
+          (await response.json()) as ApiResponse<BackendTeacher>;
+        return mapTeacherResponse(responseData.data);
+      } else {
+        const response = await api.get<ApiResponse<BackendTeacher>>(url);
+        return mapTeacherResponse(response.data.data);
+      }
+    } catch (error) {
+      logger.error("get current teacher error", { error: String(error) });
+      throw error;
+    }
+  },
+
+  // Get educational groups for current user
+  // Pass token to skip redundant getSession() call (saves ~600ms per request)
+  getMyEducationalGroups: async (
+    token?: string,
+  ): Promise<EducationalGroup[]> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi
+      ? "/api/me/groups"
+      : `${env.NEXT_PUBLIC_API_URL}/me/groups`;
+
+    try {
+      if (useProxyApi) {
+        // Use provided token or fall back to getSession()
+        let authToken = token;
+        if (!authToken) {
+          const session = await getCachedSession();
+          authToken = session?.user?.token;
+        }
+
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("get educational groups failed", {
+            status: response.status,
+            error: errorText,
+          });
+          throw new Error(`Get educational groups failed: ${response.status}`);
+        }
+
+        const responseData = (await response.json()) as ApiResponse<
+          BackendEducationalGroup[]
+        >;
+        // Handle empty or missing data
+        if (!responseData.data || !Array.isArray(responseData.data)) {
+          return [];
+        }
+        return responseData.data.map(mapEducationalGroupResponse);
+      } else {
+        const response =
+          await api.get<ApiResponse<BackendEducationalGroup[]>>(url);
+        // Handle empty or missing data
+        if (!response.data.data || !Array.isArray(response.data.data)) {
+          return [];
+        }
+        return response.data.data.map(mapEducationalGroupResponse);
+      }
+    } catch (error) {
+      logger.error("get educational groups error", { error: String(error) });
+      throw error;
+    }
+  },
+
+  // Get activity groups for current user
+  getMyActivityGroups: async (): Promise<ActivityGroup[]> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi
+      ? "/api/me/groups/activity"
+      : `${env.NEXT_PUBLIC_API_URL}/me/groups/activity`;
+
+    try {
+      if (useProxyApi) {
+        const session = await getCachedSession();
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${session?.user?.token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("get activity groups failed", {
+            status: response.status,
+            error: errorText,
+          });
+          throw new Error(`Get activity groups failed: ${response.status}`);
+        }
+
+        const responseData = (await response.json()) as ApiResponse<
+          BackendActivityGroup[]
+        >;
+        return responseData.data.map(mapActivityGroupResponse);
+      } else {
+        const response =
+          await api.get<ApiResponse<BackendActivityGroup[]>>(url);
+        return response.data.data.map(mapActivityGroupResponse);
+      }
+    } catch (error) {
+      logger.error("get activity groups error", { error: String(error) });
+      throw error;
+    }
+  },
+
+  // Get active groups for current user
+  getMyActiveGroups: async (): Promise<ActiveGroup[]> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi
+      ? "/api/me/groups/active"
+      : `${env.NEXT_PUBLIC_API_URL}/me/groups/active`;
+
+    try {
+      if (useProxyApi) {
+        const session = await getCachedSession();
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${session?.user?.token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("get active groups failed", {
+            status: response.status,
+            error: errorText,
+          });
+          throw new Error(`Get active groups failed: ${response.status}`);
+        }
+
+        const responseData = (await response.json()) as ApiResponse<
+          BackendActiveGroup[] | null
+        >;
+        const groups = Array.isArray(responseData.data)
+          ? responseData.data
+          : [];
+        return groups.map(mapActiveGroupResponse);
+      } else {
+        const response =
+          await api.get<ApiResponse<BackendActiveGroup[] | null>>(url);
+        const groups = Array.isArray(response.data.data)
+          ? response.data.data
+          : [];
+        return groups.map(mapActiveGroupResponse);
+      }
+    } catch (error) {
+      logger.error("get active groups error", { error: String(error) });
+      throw error;
+    }
+  },
+
+  // Get supervised groups for current user
+  getMySupervisedGroups: async (): Promise<ActiveGroup[]> => {
+    const useProxyApi = globalThis.window !== undefined;
+    const url = useProxyApi
+      ? "/api/me/groups/supervised"
+      : `${env.NEXT_PUBLIC_API_URL}/me/groups/supervised`;
+
+    try {
+      if (useProxyApi) {
+        const session = await getCachedSession();
+        const response = await fetchWithAuth(url, {
+          headers: {
+            Authorization: `Bearer ${session?.user?.token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error("get supervised groups failed", {
+            status: response.status,
+            error: errorText,
+          });
+          throw new Error(`Get supervised groups failed: ${response.status}`);
+        }
+
+        const responseData = (await response.json()) as ApiResponse<
+          BackendActiveGroup[] | null
+        >;
+        const groups = Array.isArray(responseData.data)
+          ? responseData.data
+          : [];
+        return groups.map(mapActiveGroupResponse);
+      } else {
+        const response =
+          await api.get<ApiResponse<BackendActiveGroup[] | null>>(url);
+        const groups = Array.isArray(response.data.data)
+          ? response.data.data
+          : [];
+        return groups.map(mapActiveGroupResponse);
+      }
+    } catch (error) {
+      logger.error("get supervised groups error", { error: String(error) });
+      throw error;
+    }
+  },
+
+  // Check if user has any educational groups (convenience method)
+  hasEducationalGroups: async (): Promise<boolean> => {
+    try {
+      const groups = await userContextService.getMyEducationalGroups();
+      return groups.length > 0;
+    } catch (error) {
+      logger.error("error checking for educational groups", {
+        error: String(error),
+      });
+      return false;
+    }
+  },
+};

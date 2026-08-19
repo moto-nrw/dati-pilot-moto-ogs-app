@@ -1,0 +1,171 @@
+services:
+  server:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - 8080:8080
+    volumes:
+      # Mount source code for hot reload
+      - ./backend:/app
+      # Preserve go modules cache
+      - go_mod_cache:/go/pkg/mod
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      LOG_TEXTLOGGING: ${LOG_TEXTLOGGING:-"true"}
+      PORT: ${PORT:-8080}
+      DB_DSN: ${DB_DSN:-postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=require}
+      DB_DEBUG: ${DB_DEBUG:-"true"}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+      AUTH_JWT_EXPIRY: ${AUTH_JWT_EXPIRY:-1h}
+      AUTH_JWT_REFRESH_EXPIRY: ${AUTH_JWT_REFRESH_EXPIRY:-168h}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      PHOENIX_AUTH_PASSWORD: ${PHOENIX_AUTH_PASSWORD}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-"no-reply@example.com"}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-"Project Phoenix"}
+      EMAIL_SMTP_HOST: ${EMAIL_SMTP_HOST}
+      EMAIL_SMTP_PORT: ${EMAIL_SMTP_PORT:-465}
+      EMAIL_SMTP_USER: ${EMAIL_SMTP_USER}
+      EMAIL_SMTP_PASSWORD: ${EMAIL_SMTP_PASSWORD}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      INVITATION_TOKEN_EXPIRY_HOURS: ${INVITATION_TOKEN_EXPIRY_HOURS:-48}
+      PASSWORD_RESET_TOKEN_EXPIRY_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRY_MINUTES:-30}
+      ENABLE_CORS: ${ENABLE_CORS:-"true"}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-"false"}
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-10}
+      RATE_LIMIT_AUTH_REQUESTS_PER_MINUTE: ${RATE_LIMIT_AUTH_REQUESTS_PER_MINUTE:-5}
+      SECURITY_LOGGING_ENABLED: ${SECURITY_LOGGING_ENABLED:-"false"}
+      CLEANUP_SCHEDULER_ENABLED: ${CLEANUP_SCHEDULER_ENABLED:-"true"}
+      CLEANUP_SCHEDULER_TIME: ${CLEANUP_SCHEDULER_TIME:-"02:00"}
+      CLEANUP_SCHEDULER_TIMEOUT_MINUTES: ${CLEANUP_SCHEDULER_TIMEOUT_MINUTES:-30}
+      SESSION_END_SCHEDULER_ENABLED: ${SESSION_END_SCHEDULER_ENABLED:-"true"}
+      SESSION_END_TIME: ${SESSION_END_TIME:-"18:00"}
+      SESSION_END_TIMEOUT_MINUTES: ${SESSION_END_TIMEOUT_MINUTES:-10}
+      STUDENT_DAILY_CHECKOUT_TIME: ${STUDENT_DAILY_CHECKOUT_TIME:-"15:00"}
+      SESSION_CLEANUP_ENABLED: ${SESSION_CLEANUP_ENABLED:-"true"}
+      SESSION_CLEANUP_INTERVAL_MINUTES: ${SESSION_CLEANUP_INTERVAL_MINUTES:-15}
+      SESSION_ABANDONED_THRESHOLD_MINUTES: ${SESSION_ABANDONED_THRESHOLD_MINUTES:-60}
+      OGS_DEVICE_PIN: ${OGS_DEVICE_PIN:-1234}
+      OPERATOR_EMAIL: ${OPERATOR_EMAIL:-operator@example.com}
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD}
+      OPERATOR_DISPLAY_NAME: ${OPERATOR_DISPLAY_NAME:-Administrator}
+    # Run migrations before starting air (phoenix_auth role must exist for serve)
+    command: ["sh", "-c", "go run . migrate && air -c .air.toml"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      AUTH_JWT_REFRESH_EXPIRY: ${AUTH_JWT_REFRESH_EXPIRY:-168h}
+      # Server-side API URL (internal Docker network, never leaves container network)
+      API_URL: "http://server:8080"
+      # Client-side API URL (browser-accessible, must be reachable from user's browser)
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-"http://server:8080"}
+      # NextAuth configuration
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-"http://localhost:3000"}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      # Skip env validation in Docker
+      SKIP_ENV_VALIDATION: ${SKIP_ENV_VALIDATION:-"true"}
+      NEXT_TELEMETRY_DISABLED: ${NEXT_TELEMETRY_DISABLED:-"1"}
+      # Frontend structured logging level (debug, info, warn, error)
+      NEXT_PUBLIC_LOG_LEVEL: ${NEXT_PUBLIC_LOG_LEVEL:-info}
+      # Multi-tenancy: base domain for subdomain routing
+      TENANT_DOMAIN: ${TENANT_DOMAIN:-localhost}
+      NEXT_PUBLIC_TENANT_DOMAIN: ${NEXT_PUBLIC_TENANT_DOMAIN:-localhost}
+    depends_on:
+      - server
+    volumes:
+      # Mount only source directories for hot reload
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      # Mount config files that might change
+      - ./frontend/package.json:/app/package.json
+      - ./frontend/pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - ./frontend/next.config.js:/app/next.config.js
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/postcss.config.js:/app/postcss.config.js
+      # Use named volume for node_modules to avoid conflicts
+      - frontend_node_modules:/app/node_modules
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    ports:
+      - 5432:5432
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./config/ssl/postgres/certs/server.crt:/var/lib/postgresql/ssl/server.crt:ro
+      - ./config/ssl/postgres/certs/server.key:/var/lib/postgresql/ssl/server.key:ro
+      - ./config/ssl/postgres/certs/ca.crt:/var/lib/postgresql/ssl/ca.crt:ro
+      - ./config/ssl/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/ssl/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command:
+      [
+        "-c",
+        "config_file=/etc/postgresql/postgresql.conf",
+        "-c",
+        "hba_file=/etc/postgresql/pg_hba.conf",
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 1s
+      timeout: 1s
+      retries: 2
+
+  # Test database for integration tests
+  # Start with: docker compose --profile test up -d postgres-test
+  # Or run all tests: docker compose --profile test up -d
+  # Uses isolated network to prevent "network still in use" on `docker compose down`
+  postgres-test:
+    image: postgres:17
+    profiles: ["test"]
+    restart: unless-stopped
+    networks: [test]
+    ports:
+      - "${TEST_DB_PORT:-5433}:5432"
+    volumes:
+      - postgres_test:/var/lib/postgresql/data
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: phoenix_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d phoenix_test"]
+      interval: 1s
+      timeout: 1s
+      retries: 5
+
+networks:
+  test:
+    # Isolated network for test services — not removed by `docker compose down`
+
+volumes:
+  postgres:
+  postgres_test:
+  frontend_node_modules:
+  go_mod_cache:

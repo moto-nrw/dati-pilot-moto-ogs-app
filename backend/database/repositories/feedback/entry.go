@@ -1,0 +1,355 @@
+package feedback
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/moto-nrw/project-phoenix/database/repositories/base"
+	modelBase "github.com/moto-nrw/project-phoenix/models/base"
+	"github.com/moto-nrw/project-phoenix/models/feedback"
+	"github.com/uptrace/bun"
+)
+
+// Table and query constants (S1192 - avoid duplicate string literals)
+const (
+	tableFeedbackEntries      = "feedback.entries"
+	tableFeedbackEntriesAlias = `feedback.entries AS "entry"`
+	whereIsMensaFeedback      = "is_mensa_feedback = ?"
+	orderDayDesc              = "day DESC"
+	orderTimeDesc             = "time DESC"
+)
+
+// EntryRepository implements feedback.EntryRepository interface
+type EntryRepository struct {
+	*base.Repository[*feedback.Entry]
+	db *bun.DB
+}
+
+// NewEntryRepository creates a new EntryRepository
+func NewEntryRepository(db *bun.DB) feedback.EntryRepository {
+	repo := base.NewRepository[*feedback.Entry](db, tableFeedbackEntries, "Entry")
+	repo.TenantScoped = true
+	return &EntryRepository{
+		Repository: repo,
+		db:         db,
+	}
+}
+
+// FindByID retrieves a feedback entry by its ID
+// Returns (nil, nil) if no entry is found
+func (r *EntryRepository) FindByID(ctx context.Context, id interface{}) (*feedback.Entry, error) {
+	entry := new(feedback.Entry)
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model(entry).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where(`"entry".id = ?`, id)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	err := query.Scan(ctx)
+
+	if err != nil {
+		// Return (nil, nil) for not found to allow service layer to handle it
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by id",
+			Err: err,
+		}
+	}
+
+	return entry, nil
+}
+
+// FindByStudentID retrieves feedback entries by student ID
+func (r *EntryRepository) FindByStudentID(ctx context.Context, studentID int64) ([]*feedback.Entry, error) {
+	var entries []*feedback.Entry
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model(&entries).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where("student_id = ?", studentID)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	err := query.
+		Order(orderDayDesc).
+		Order(orderTimeDesc).
+		Scan(ctx)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by student ID",
+			Err: err,
+		}
+	}
+
+	return entries, nil
+}
+
+// FindByDay retrieves feedback entries for a specific day
+func (r *EntryRepository) FindByDay(ctx context.Context, day time.Time) ([]*feedback.Entry, error) {
+	var entries []*feedback.Entry
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model(&entries).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where("day = ?", day)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	err := query.Order(orderTimeDesc).Scan(ctx)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by day",
+			Err: err,
+		}
+	}
+
+	return entries, nil
+}
+
+// FindByDateRange retrieves feedback entries within a date range
+func (r *EntryRepository) FindByDateRange(ctx context.Context, startDate, endDate time.Time) ([]*feedback.Entry, error) {
+	var entries []*feedback.Entry
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model(&entries).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where("day >= ? AND day <= ?", startDate, endDate)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	err := query.
+		Order(orderDayDesc).
+		Order(orderTimeDesc).
+		Scan(ctx)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by date range",
+			Err: err,
+		}
+	}
+
+	return entries, nil
+}
+
+// FindMensaFeedback retrieves feedback entries related to the cafeteria
+func (r *EntryRepository) FindMensaFeedback(ctx context.Context, isMensaFeedback bool) ([]*feedback.Entry, error) {
+	var entries []*feedback.Entry
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model(&entries).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where(whereIsMensaFeedback, isMensaFeedback)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	err := query.
+		Order(orderDayDesc).
+		Order(orderTimeDesc).
+		Scan(ctx)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find mensa feedback",
+			Err: err,
+		}
+	}
+
+	return entries, nil
+}
+
+// FindByStudentAndDateRange retrieves feedback entries for a student within a date range
+func (r *EntryRepository) FindByStudentAndDateRange(ctx context.Context, studentID int64, startDate, endDate time.Time) ([]*feedback.Entry, error) {
+	var entries []*feedback.Entry
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model(&entries).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where("student_id = ? AND day >= ? AND day <= ?", studentID, startDate, endDate)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	err := query.
+		Order(orderDayDesc).
+		Order(orderTimeDesc).
+		Scan(ctx)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by student and date range",
+			Err: err,
+		}
+	}
+
+	return entries, nil
+}
+
+// CountByDay counts feedback entries for a specific day
+func (r *EntryRepository) CountByDay(ctx context.Context, day time.Time) (int, error) {
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model((*feedback.Entry)(nil)).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where("day = ?", day)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	count, err := query.Count(ctx)
+
+	if err != nil {
+		return 0, &modelBase.DatabaseError{
+			Op:  "count by day",
+			Err: err,
+		}
+	}
+
+	return count, nil
+}
+
+// CountByStudentID counts feedback entries for a specific student
+func (r *EntryRepository) CountByStudentID(ctx context.Context, studentID int64) (int, error) {
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model((*feedback.Entry)(nil)).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where("student_id = ?", studentID)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	count, err := query.Count(ctx)
+
+	if err != nil {
+		return 0, &modelBase.DatabaseError{
+			Op:  "count by student ID",
+			Err: err,
+		}
+	}
+
+	return count, nil
+}
+
+// CountMensaFeedback counts feedback entries related to the cafeteria
+func (r *EntryRepository) CountMensaFeedback(ctx context.Context, isMensaFeedback bool) (int, error) {
+	query := base.GetDB(ctx, r.db).NewSelect().
+		Model((*feedback.Entry)(nil)).
+		ModelTableExpr(tableFeedbackEntriesAlias).
+		Where(whereIsMensaFeedback, isMensaFeedback)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	count, err := query.Count(ctx)
+
+	if err != nil {
+		return 0, &modelBase.DatabaseError{
+			Op:  "count mensa feedback",
+			Err: err,
+		}
+	}
+
+	return count, nil
+}
+
+// Create overrides the base Create method to handle validation
+func (r *EntryRepository) Create(ctx context.Context, entry *feedback.Entry) error {
+	if entry == nil {
+		return fmt.Errorf("entry cannot be nil")
+	}
+
+	// Validate entry
+	if err := entry.Validate(); err != nil {
+		return err
+	}
+
+	// Use the base Create method
+	return r.Repository.Create(ctx, entry)
+}
+
+// Update overrides the base Update method to handle validation
+func (r *EntryRepository) Update(ctx context.Context, entry *feedback.Entry) error {
+	if entry == nil {
+		return fmt.Errorf("entry cannot be nil")
+	}
+
+	// Validate entry
+	if err := entry.Validate(); err != nil {
+		return err
+	}
+
+	// Use the base Update method
+	return r.Repository.Update(ctx, entry)
+}
+
+// List retrieves entries matching the provided filters
+func (r *EntryRepository) List(ctx context.Context, filters map[string]interface{}) ([]*feedback.Entry, error) {
+	var entries []*feedback.Entry
+	query := base.GetDB(ctx, r.db).NewSelect().Model(&entries).ModelTableExpr(tableFeedbackEntriesAlias)
+
+	if where, val, ok := base.TenantWhere(ctx, "entry"); ok {
+		query = query.Where(where, val)
+	}
+
+	query = applyFeedbackFilters(query, filters)
+	query = query.Order(orderDayDesc).Order(orderTimeDesc)
+
+	if err := query.Scan(ctx); err != nil {
+		return nil, &modelBase.DatabaseError{Op: "list", Err: err}
+	}
+
+	return entries, nil
+}
+
+// applyFeedbackFilters applies all filters to the query
+func applyFeedbackFilters(query *bun.SelectQuery, filters map[string]interface{}) *bun.SelectQuery {
+	for field, value := range filters {
+		if value == nil {
+			continue
+		}
+		query = applyFeedbackFilter(query, field, value)
+	}
+	return query
+}
+
+// applyFeedbackFilter applies a single filter to the query
+func applyFeedbackFilter(query *bun.SelectQuery, field string, value interface{}) *bun.SelectQuery {
+	switch field {
+	case "is_mensa_feedback":
+		return query.Where("is_mensa_feedback = ?", value)
+	case "day_from":
+		if dateValue, ok := value.(time.Time); ok {
+			// Format as date string to avoid timezone conversion issues
+			// PostgreSQL DATE comparisons need plain date strings, not timestamps
+			return query.Where("day >= ?", dateValue.Format("2006-01-02"))
+		}
+	case "day_to":
+		if dateValue, ok := value.(time.Time); ok {
+			// Format as date string to avoid timezone conversion issues
+			return query.Where("day <= ?", dateValue.Format("2006-01-02"))
+		}
+	case "value_like":
+		if strValue, ok := value.(string); ok {
+			return query.Where("value ILIKE ?", "%"+strValue+"%")
+		}
+	default:
+		return query.Where("? = ?", bun.Ident(field), value)
+	}
+	return query
+}

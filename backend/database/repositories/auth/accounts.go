@@ -1,0 +1,405 @@
+package auth
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/moto-nrw/project-phoenix/database/repositories/base"
+	"github.com/moto-nrw/project-phoenix/models/auth"
+	modelBase "github.com/moto-nrw/project-phoenix/models/base"
+	"github.com/uptrace/bun"
+)
+
+const (
+	accountTable      = "auth.accounts"
+	accountTableAlias = `auth.accounts AS "account"`
+)
+
+// AccountRepository implements auth.AccountRepository interface
+type AccountRepository struct {
+	*base.Repository[*auth.Account]
+	db *bun.DB
+}
+
+// NewAccountRepository creates a new AccountRepository
+func NewAccountRepository(db *bun.DB) auth.AccountRepository {
+	return &AccountRepository{
+		Repository: base.NewRepository[*auth.Account](db, accountTable, "Account"),
+		db:         db,
+	}
+}
+
+// FindByEmail retrieves an account by email address
+func (r *AccountRepository) FindByEmail(ctx context.Context, email string) (*auth.Account, error) {
+	account := new(auth.Account)
+
+	// Explicitly specify the schema and table
+	err := base.GetDB(ctx, r.db).NewSelect().
+		ModelTableExpr(accountTable).
+		Where("LOWER(email) = LOWER(?)", email).
+		Scan(ctx, account)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by email",
+			Err: err,
+		}
+	}
+
+	return account, nil
+}
+
+// FindByUsername retrieves an account by username
+func (r *AccountRepository) FindByUsername(ctx context.Context, username string) (*auth.Account, error) {
+	account := new(auth.Account)
+
+	// Explicitly specify the schema and table
+	err := base.GetDB(ctx, r.db).NewSelect().
+		ModelTableExpr(accountTable).
+		Where("LOWER(username) = LOWER(?)", username).
+		Scan(ctx, account)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by username",
+			Err: err,
+		}
+	}
+
+	return account, nil
+}
+
+// UpdateLastLogin updates the last login timestamp for an account
+func (r *AccountRepository) UpdateLastLogin(ctx context.Context, id int64) error {
+	_, err := base.GetDB(ctx, r.db).NewUpdate().
+		Model((*auth.Account)(nil)).
+		ModelTableExpr(accountTable).
+		Set("last_login = ?", time.Now()).
+		Where(whereID, id).
+		Exec(ctx)
+
+	if err != nil {
+		return &modelBase.DatabaseError{
+			Op:  "update last login",
+			Err: err,
+		}
+	}
+
+	return nil
+}
+
+// UpdatePassword updates the password hash for an account
+func (r *AccountRepository) UpdatePassword(ctx context.Context, id int64, passwordHash string) error {
+	_, err := base.GetDB(ctx, r.db).NewUpdate().
+		Model((*auth.Account)(nil)).
+		ModelTableExpr(accountTable).
+		Set("password_hash = ?", passwordHash).
+		Set("is_password_otp = ?", false). // Reset OTP flag when setting a permanent password
+		Where(whereID, id).
+		Exec(ctx)
+
+	if err != nil {
+		return &modelBase.DatabaseError{
+			Op:  "update password",
+			Err: err,
+		}
+	}
+
+	return nil
+}
+
+// FindByRole retrieves accounts that have a specific role
+func (r *AccountRepository) FindByRole(ctx context.Context, role string) ([]*auth.Account, error) {
+	var accounts []*auth.Account
+
+	// Use a SQL JOIN to retrieve accounts with the specified role
+	// This assumes your account_roles table exists and has the proper foreign keys
+	err := base.GetDB(ctx, r.db).NewSelect().
+		Model(&accounts).
+		ModelTableExpr(accountTableAlias).
+		Join(`JOIN auth.account_roles ar ON ar.account_id = "account".id`).
+		Join(`JOIN auth.roles r ON ar.role_id = r.id`).
+		Where("LOWER(r.name) = LOWER(?)", role).
+		Scan(ctx)
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find by role",
+			Err: err,
+		}
+	}
+
+	return accounts, nil
+}
+
+// List retrieves accounts matching the provided filters
+func (r *AccountRepository) List(ctx context.Context, filters map[string]interface{}) ([]*auth.Account, error) {
+	var accounts []*auth.Account
+	query := base.GetDB(ctx, r.db).NewSelect().Model(&accounts).ModelTableExpr(accountTableAlias)
+
+	// Apply filters
+	for field, value := range filters {
+		if value != nil {
+			query = r.applyAccountFilter(query, field, value)
+		}
+	}
+
+	err := query.Scan(ctx)
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "list",
+			Err: err,
+		}
+	}
+
+	return accounts, nil
+}
+
+// applyAccountFilter applies a single filter to the query
+func (r *AccountRepository) applyAccountFilter(query *bun.SelectQuery, field string, value interface{}) *bun.SelectQuery {
+	switch field {
+	case "email":
+		return r.applyStringEqualFilter(query, "email", value)
+	case "username":
+		return r.applyStringEqualFilter(query, "username", value)
+	case "email_like":
+		return r.applyStringLikeFilter(query, "email", value)
+	case "username_like":
+		return r.applyStringLikeFilter(query, "username", value)
+	case "active":
+		return query.Where("active = ?", value)
+	case "role":
+		return r.applyRoleFilter(query, value)
+	default:
+		return query.Where("? = ?", bun.Ident(field), value)
+	}
+}
+
+// applyStringEqualFilter applies case-insensitive equality filter for string fields
+func (r *AccountRepository) applyStringEqualFilter(query *bun.SelectQuery, field string, value interface{}) *bun.SelectQuery {
+	if strValue, ok := value.(string); ok {
+		return query.Where("LOWER("+field+") = LOWER(?)", strValue)
+	}
+	return query.Where(field+" = ?", value)
+}
+
+// applyStringLikeFilter applies case-insensitive LIKE filter for string fields
+func (r *AccountRepository) applyStringLikeFilter(query *bun.SelectQuery, field string, value interface{}) *bun.SelectQuery {
+	if strValue, ok := value.(string); ok {
+		return query.Where("LOWER("+field+") LIKE LOWER(?)", "%"+strValue+"%")
+	}
+	return query
+}
+
+// applyRoleFilter applies role-based filtering
+func (r *AccountRepository) applyRoleFilter(query *bun.SelectQuery, value interface{}) *bun.SelectQuery {
+	if strValue, ok := value.(string); ok {
+		return query.
+			Join("JOIN auth.account_roles ar ON ar.account_id = account.id").
+			Join("JOIN auth.roles r ON ar.role_id = r.id").
+			Where("LOWER(r.name) = LOWER(?)", strValue)
+	}
+	return query
+}
+
+// FindAccountsWithRolesAndPermissions retrieves accounts with their associated roles and permissions
+func (r *AccountRepository) FindAccountsWithRolesAndPermissions(ctx context.Context, filters map[string]interface{}) ([]*auth.Account, error) {
+	var accounts []*auth.Account
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// First get the accounts based on filters
+		if err := r.loadAccountsByFilters(ctx, tx, &accounts, filters); err != nil {
+			return err
+		}
+
+		// Batch-load roles and permissions for all accounts (3 queries instead of 3N)
+		if err := r.loadAllAccountRolesAndPermissions(ctx, tx, accounts); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, &modelBase.DatabaseError{
+			Op:  "find accounts with roles and permissions",
+			Err: err,
+		}
+	}
+
+	return accounts, nil
+}
+
+// loadAccountsByFilters loads accounts based on provided filters
+func (r *AccountRepository) loadAccountsByFilters(ctx context.Context, tx bun.Tx, accounts *[]*auth.Account, filters map[string]interface{}) error {
+	query := tx.NewSelect().
+		Model(accounts).
+		ModelTableExpr(accountTableAlias)
+	for field, value := range filters {
+		if value != nil {
+			query = query.Where("? = ?", bun.Ident(field), value)
+		}
+	}
+	return query.Scan(ctx)
+}
+
+// accountRole is a result struct for batch-loading roles with their account association.
+type accountRole struct {
+	AccountID int64 `bun:"account_id"`
+	auth.Role `bun:"role,extend"`
+}
+
+// accountPermission is a result struct for batch-loading permissions with their account association.
+type accountPermission struct {
+	AccountID       int64 `bun:"account_id"`
+	auth.Permission `bun:"permission,extend"`
+}
+
+// loadAllAccountRolesAndPermissions batch-loads roles and permissions for all accounts
+// using 3 queries instead of 3 per account.
+func (r *AccountRepository) loadAllAccountRolesAndPermissions(ctx context.Context, tx bun.Tx, accounts []*auth.Account) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	// Collect all account IDs
+	accountIDs := make([]int64, len(accounts))
+	for i, a := range accounts {
+		accountIDs[i] = a.ID
+	}
+
+	// 1. Batch-load roles for all accounts
+	// Select only columns mapped in auth.Role to avoid scanning unmapped DB columns (e.g. metadata)
+	var roleResults []accountRole
+	err := tx.NewSelect().
+		TableExpr(`auth.roles AS "role"`).
+		ColumnExpr(`ar.account_id`).
+		ColumnExpr(`"role".id, "role".created_at, "role".updated_at, "role".name, "role".description, "role".is_system`).
+		Join(`JOIN auth.account_roles AS ar ON ar.role_id = "role".id`).
+		Where("ar.account_id IN (?)", bun.In(accountIDs)).
+		Scan(ctx, &roleResults)
+	if err != nil {
+		return err
+	}
+
+	rolesByAccount := make(map[int64][]*auth.Role, len(accounts))
+	for i := range roleResults {
+		ar := roleResults[i]
+		role := ar.Role
+		rolesByAccount[ar.AccountID] = append(rolesByAccount[ar.AccountID], &role)
+	}
+
+	// 2. Batch-load direct permissions for all accounts
+	var directPermResults []accountPermission
+	err = tx.NewSelect().
+		TableExpr(`auth.permissions AS "permission"`).
+		ColumnExpr(`ap.account_id`).
+		ColumnExpr(`"permission".id, "permission".created_at, "permission".updated_at, "permission".name, "permission".description, "permission".resource, "permission".action`).
+		Join(`JOIN auth.account_permissions AS ap ON ap.permission_id = "permission".id`).
+		Where("ap.account_id IN (?)", bun.In(accountIDs)).
+		Where("ap.granted = true").
+		Scan(ctx, &directPermResults)
+	if err != nil {
+		return err
+	}
+
+	directPermsByAccount := make(map[int64][]*auth.Permission, len(accounts))
+	for i := range directPermResults {
+		p := directPermResults[i]
+		perm := p.Permission
+		directPermsByAccount[p.AccountID] = append(directPermsByAccount[p.AccountID], &perm)
+	}
+
+	// 3. Batch-load role-based permissions for all accounts
+	var rolePermResults []accountPermission
+	err = tx.NewSelect().
+		TableExpr(`auth.permissions AS "permission"`).
+		ColumnExpr(`ar.account_id`).
+		ColumnExpr(`"permission".id, "permission".created_at, "permission".updated_at, "permission".name, "permission".description, "permission".resource, "permission".action`).
+		Join(`JOIN auth.role_permissions AS rp ON rp.permission_id = "permission".id`).
+		Join(`JOIN auth.account_roles AS ar ON ar.role_id = rp.role_id`).
+		Where("ar.account_id IN (?)", bun.In(accountIDs)).
+		Scan(ctx, &rolePermResults)
+	if err != nil {
+		return err
+	}
+
+	rolePermsByAccount := make(map[int64][]*auth.Permission, len(accounts))
+	for i := range rolePermResults {
+		p := rolePermResults[i]
+		perm := p.Permission
+		rolePermsByAccount[p.AccountID] = append(rolePermsByAccount[p.AccountID], &perm)
+	}
+
+	// 4. Assign results to each account
+	for _, account := range accounts {
+		account.Roles = rolesByAccount[account.ID]
+		account.Permissions = r.mergePermissions(
+			directPermsByAccount[account.ID],
+			rolePermsByAccount[account.ID],
+		)
+	}
+
+	return nil
+}
+
+// mergePermissions combines direct and role-based permissions, avoiding duplicates
+func (r *AccountRepository) mergePermissions(directPermissions, rolePermissions []*auth.Permission) []*auth.Permission {
+	permMap := make(map[int64]*auth.Permission)
+	for _, p := range directPermissions {
+		permMap[p.ID] = p
+	}
+	for _, p := range rolePermissions {
+		if _, exists := permMap[p.ID]; !exists {
+			permMap[p.ID] = p
+		}
+	}
+
+	allPermissions := make([]*auth.Permission, 0, len(permMap))
+	for _, p := range permMap {
+		allPermissions = append(allPermissions, p)
+	}
+	return allPermissions
+}
+
+// Create overrides the base Create method for validation
+func (r *AccountRepository) Create(ctx context.Context, account *auth.Account) error {
+	if account == nil {
+		return fmt.Errorf("account cannot be nil")
+	}
+
+	// Validate account - this will also normalize the email
+	if err := account.Validate(); err != nil {
+		return err
+	}
+
+	// Use the base Create method which now uses ModelTableExpr
+	return r.Repository.Create(ctx, account)
+}
+
+// Update overrides the base Update method to handle email normalization
+func (r *AccountRepository) Update(ctx context.Context, account *auth.Account) error {
+	if account == nil {
+		return fmt.Errorf("account cannot be nil")
+	}
+
+	// Validate account - this will also normalize the email
+	if err := account.Validate(); err != nil {
+		return err
+	}
+
+	// Execute the query using GetDB for transaction support
+	_, err := base.GetDB(ctx, r.db).NewUpdate().
+		Model(account).
+		Where(whereID, account.ID).
+		ModelTableExpr(accountTable).
+		Exec(ctx)
+	if err != nil {
+		return &modelBase.DatabaseError{
+			Op:  "update",
+			Err: err,
+		}
+	}
+
+	return nil
+}
